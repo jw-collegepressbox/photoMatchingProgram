@@ -7,32 +7,57 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
 
+
 # --- Filename parsing ---
 
 def parse_filenames(folder_or_files):
     """
-    Parse image filenames following the convention:
-    teamabbr_lastname_firstname.png
-    Handles compound first/last names (everything after second underscore is first name).
+    Strict parse: only accept filenames with exactly TWO underscores: team_last_first.png
+    Keeps invalid-format files too so they show up in results.
     """
     parsed = []
     for file in folder_or_files:
         name = os.path.basename(file)
         if not name.lower().endswith(".png"):
             continue
-        parts = name[:-4].split("_")
-        if len(parts) < 3:
+
+        base = name[:-4]
+        # require exactly two underscores
+        if base.count("_") != 2:
+            parsed.append({
+                "filename": name,
+                "school": None,
+                "last": None,
+                "first": None,
+                "format_valid": False,
+                "format_msg": "Must have exactly two underscores: team_last_first.png"
+            })
+            continue
+
+        parts = base.split("_")
+        # now parts length should be exactly 3
+        if len(parts) != 3:
+            parsed.append({
+                "filename": name,
+                "school": None,
+                "last": None,
+                "first": None,
+                "format_valid": False,
+                "format_msg": "Unexpected parsing result"
+            })
             continue
 
         school = parts[0].lower()
         last = parts[1].lower()
-        first = "_".join(parts[2:]).lower()
+        first = parts[2].lower()
 
         parsed.append({
+            "filename": name,
             "school": school,
             "last": last,
             "first": first,
-            "filename": name
+            "format_valid": True,
+            "format_msg": None
         })
     return parsed
 
@@ -54,29 +79,59 @@ def normalize(name: str) -> str:
 
 def scrape_names(url: str):
     """
-    Scrape names from roster pages in a provider-agnostic way.
-    Regex captures hyphens, apostrophes, and multi-part names.
+    Scrape roster names from Sidearm / common college sports websites.
+    Returns a list of normalized 'first last' strings.
+    Handles data-sort attributes and avoids pronunciation widgets.
     """
     try:
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-        page_text = response.text
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        # e.g., "E'Lla Boykin", "Pape Abdoulaye Sy", "Lin-Manuel Miranda"
-        name_pattern = r"\b[A-Z][a-zA-Z'-.]+(?: [A-Z][a-zA-Z'-.]+)+\b"
-        matches = re.findall(name_pattern, page_text)
+        found = []
 
+        # --- Step 1: Look for Sidearm table cells with player names ---
+        for td in soup.select("td.sidearm-table-player-name"):
+            # Prefer data-sort if available (clean "Last, First")
+            if td.has_attr("data-sort"):
+                try:
+                    last, first = [s.strip() for s in td["data-sort"].split(",", 1)]
+                    found.append(f"{first} {last}")
+                except Exception:
+                    continue
+            else:
+                # Fallback: get text of the <a> link (ignore child <img> pronunciation)
+                a_tag = td.find("a")
+                if a_tag:
+                    found.append(a_tag.get_text(" ", strip=True))
+
+        # --- Step 2: If none found, try generic roster links / anchors ---
+        if not found:
+            for a in soup.select("a"):
+                txt = a.get_text(" ", strip=True)
+                if txt and len(txt.split()) <= 4:  # heuristic for names
+                    found.append(txt)
+
+        # --- Step 3: Deduplicate and normalize ---
+        unique = []
         seen = set()
-        names = []
-        for nm in matches:
+        for nm in found:
+            # Handle "Last, First" if somehow missed
+            if "," in nm:
+                parts = [p.strip() for p in nm.split(",", 1)]
+                if len(parts) == 2:
+                    nm = f"{parts[1]} {parts[0]}"
             cleaned = normalize(nm)
-            if cleaned not in seen:
+            if cleaned and cleaned not in seen:
                 seen.add(cleaned)
-                names.append(cleaned)
-        return names
+                unique.append(cleaned)
+
+        return unique
+
     except Exception as e:
-        st.error(f"Error scraping the URL: {e}")
+        st.error(f"Error scraping roster URL: {e}")
         return []
+
 
 # --- Google Drive folder helpers (no API) ---
 
@@ -154,27 +209,70 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
 # --- Comparison logic ---
 
 def check_mismatches(parsed_files, official_names, school_prefix):
-    """Check filenames against official roster names."""
+    """
+    For each parsed file:
+      - if filename format invalid -> 'Invalid filename format'
+      - else if school slug mismatch -> 'School prefix mismatch'
+      - else if canonical (first last) matches roster -> OK
+      - else if flipped (last first) matches roster -> 'First/last name order flipped' (suggest correction from roster)
+      - else -> 'Name not in roster'
+    Suggestion now uses the *official roster name* as scraped from the school URL.
+    """
     data = []
-    official_keys = [normalize(n) for n in official_names]
+    official_keys = {normalize(n): n for n in official_names}  # map normalized -> original roster spelling
 
     for entry in parsed_files:
-        full_name = f"{entry['first']} {entry['last']}"
-        flipped_name = f"{entry['last']} {entry['first']}"
+        filename = entry.get("filename")
+        fmt_ok = entry.get("format_valid", False)
         reason = ""
         suggestion = None
 
-        if entry['school'] != school_prefix.lower():
+        if not fmt_ok:
+            reason = entry.get("format_msg", "Invalid filename format")
+            data.append({
+                "filename": filename,
+                "school": entry.get("school"),
+                "last": entry.get("last"),
+                "first": entry.get("first"),
+                "reason": reason,
+                "suggestion": suggestion
+            })
+            continue
+
+        school = entry["school"]
+        raw_last = entry["last"] or ""
+        raw_first = entry["first"] or ""
+
+        last = raw_last.replace("_", " ").strip()
+        first = raw_first.replace("_", " ").strip()
+
+        canonical = normalize(f"{first} {last}")   # expected
+        flipped = normalize(f"{last} {first}")
+
+        # School slug check
+        if school != school_prefix.lower():
             reason = "School prefix mismatch"
-            suggestion = f"{school_prefix}_{entry['last']}_{entry['first']}.png"
-        elif normalize(full_name) not in official_keys and normalize(flipped_name) not in official_keys:
-            reason = "Name not in roster"
+        else:
+            if canonical in official_keys:
+                reason = ""  # OK
+            elif flipped in official_keys:
+                reason = "First/last name order flipped"
+                roster_name = official_keys[flipped]
+                fn, ln = roster_name.split(" ", 1)
+                suggestion = f"{school_prefix}_{ln.lower()}_{fn.lower()}.png"
+            else:
+                reason = "Name not in roster"
+                # Fallback: suggest based on first valid roster name if any
+                if official_names:
+                    roster_name = official_names[0]
+                    fn, ln = roster_name.split(" ", 1)
+                    suggestion = f"{school_prefix}_{ln.lower()}_{fn.lower()}.png"
 
         data.append({
-            "filename": entry['filename'],
-            "school": entry['school'],
-            "last": entry['last'],
-            "first": entry['first'],
+            "filename": filename,
+            "school": school,
+            "last": raw_last,
+            "first": raw_first,
             "reason": reason,
             "suggestion": suggestion
         })

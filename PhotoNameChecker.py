@@ -68,27 +68,21 @@ def normalize(name: str) -> str:
     Normalize names to your conventions, including removing nicknames.
     """
     name = name.lower()
-    
-    # This specific regex will handle the Bob "Dylan" Johnson case
-    # It removes any text enclosed in double quotes or apostrophes.
     name = re.sub(r'["“”‘’].*?["“”‘’]', '', name)
-    
-    # remove suffixes
     name = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", name)
-    # remove accents
     name = unicodedata.normalize("NFD", name)
     name = "".join(c for c in name if not unicodedata.combining(c))
-    # remove punctuation except hyphens and spaces
     name = re.sub(r"[^\w\s-]", "", name)
-    # collapse spaces
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
 
 def scrape_player_names(url: str):
     """
-    Scrape player names from a roster page by trying multiple common HTML patterns.
-    Handles names with nicknames in quotes.
+    Scrape player names and nicknames from a roster page.
+    Returns two dictionaries:
+    - primary_names: {normalized_first_last: original_name}
+    - nickname_names: {normalized_nickname_last: original_name}
     """
     try:
         resp = requests.get(url, timeout=20)
@@ -96,54 +90,46 @@ def scrape_player_names(url: str):
         soup = BeautifulSoup(resp.text, "html.parser")
         
         found_names = set()
-
+        
         # Strategy 1: Find all links to full player bios.
         for a_tag in soup.find_all('a', href=re.compile(r'/roster/.*/\d+')):
-            # Prioritize the aria-label if it exists
-            if a_tag.has_attr('aria-label') and " - View Full Bio" in a_tag['aria-label']:
-                name = a_tag['aria-label'].split(' - View Full Bio')[0].strip()
-                if "coach" not in name.lower() and "staff" not in name.lower():
-                    found_names.add(name)
-            else:
-                name = a_tag.get_text(" ", strip=True)
-                parent_li = a_tag.find_parent('li')
-                if parent_li and 'sidearm-roster-coach' in parent_li.get('class', []):
-                    continue
-                if name and "coach" not in name.lower() and "staff" not in name.lower():
-                    found_names.add(name)
+            name = a_tag.get_text(" ", strip=True)
+            if "coach" not in name.lower() and "staff" not in name.lower():
+                found_names.add(name)
         
         # Strategy 2: Look for common player name classes
         common_player_selectors = [
             ".s-text-regular-bold",  
             ".roster-list-item__title",
             ".player-name",
-            "td.sidearm-table-player-name"
+            "td.sidearm-table-player-name",
+            ".roster-list__item-name"
         ]
         
         for element in soup.select(", ".join(common_player_selectors)):
             name = element.get_text(" ", strip=True)
             if "coach" not in name.lower() and "staff" not in name.lower():
                 found_names.add(name)
-        
-        # --- NEW LOGIC: Handle names with nicknames ---
-        final_names = set()
+
+        primary_names = {}
+        nickname_names = {}
+
         for name in found_names:
-            # Regex to capture "First", "Nickname", and "Last"
             match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
             if match:
                 first_name, nickname, last_name = match.groups()
-                # Add the name using the first name
-                final_names.add(normalize(f"{first_name} {last_name}"))
-                # Add the name using the nickname
-                final_names.add(normalize(f"{nickname} {last_name}"))
+                # Store the correct name in the primary dictionary
+                primary_names[normalize(f"{first_name} {last_name}")] = name
+                # Store the nickname in the nickname dictionary
+                nickname_names[normalize(f"{nickname} {last_name}")] = name
             else:
-                final_names.add(normalize(name))
-
-        return list(final_names)
+                primary_names[normalize(name)] = name
+        
+        return primary_names, nickname_names
 
     except Exception as e:
         st.error(f"Error scraping player names from URL: {e}")
-        return []
+        return {}, {}
 
 def scrape_staff_names(url: str):
     """
@@ -247,63 +233,68 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
 
 # --- Comparison logic ---
 
-def check_mismatches(parsed_files, official_player_names, official_staff_names, school_prefix):
+# --- Comparison logic ---
+
+def check_mismatches(parsed_files, player_keys, nickname_keys, official_staff_names, school_prefix):
     """
-    Checks filenames against both player and staff rosters.
+    Checks filenames against player and staff rosters, flagging filenames that use nicknames.
     """
     data = []
     
-    valid_player_names = [n for n in official_player_names if isinstance(n, str)]
     valid_staff_names = [n for n in official_staff_names if isinstance(n, str)]
-    
-    player_keys = {normalize(n): n for n in valid_player_names}
     staff_keys = {normalize(n): n for n in valid_staff_names}
 
     for entry in parsed_files:
         filename = entry.get("filename")
         fmt_ok = entry.get("format_valid", False)
-        reason = ""
+        status = ""
         suggestion = None
 
         if not fmt_ok:
-            reason = entry.get("format_msg", "Invalid filename format")
+            status = entry.get("format_msg", "Invalid filename format")
         else:
             school = entry["school"]
             raw_last = entry["last"] or ""
             raw_first = entry["first"] or ""
-            last = raw_last.replace("_", " ").strip()
-            first = raw_first.replace("_", " ").strip()
-
-            canonical = normalize(f"{first} {last}")
-            with_nickname = normalize(f"{first} {raw_first.split('_')[1]} {last}") if '_' in raw_first else ""
             
-            #flipped_canonical = normalize(f"{last} {first}")
-            #flipped_with_nickname = normalize(f"{last} {raw_first.split('_')[1]} {first}") if '_' in raw_first else ""
+            # The name from the filename, normalized for comparison.
+            normalized_filename_name = normalize(f"{raw_first} {raw_last}")
 
             if school != school_prefix.lower():
-                reason = "❌ School prefix mismatch"
-            elif canonical in player_keys or with_nickname in player_keys:
-                reason = "✅"
-            elif canonical in staff_keys or with_nickname in staff_keys:
-                reason = "OK (Staff)"
+                status = "❌ School prefix mismatch"
+            # Step 1: Check if the filename name matches a valid first name
+            elif normalized_filename_name in player_keys:
+                status = "✅"
+            # Step 2: Check if the filename name matches a known nickname
+            elif normalized_filename_name in nickname_keys:
+                original_roster_name = nickname_keys[normalized_filename_name]
+                match = re.search(r'(\S+)\s+["“”‘’]', original_roster_name)
+                if match:
+                    first_name = normalize(match.group(1))
+                    status = "❌ Nickname used instead of First Name"
+                    suggestion = f"{school_prefix}_{raw_last}_{first_name}.png"
+                else:
+                    status = "❌ Nickname used instead of First Name"
+            # Step 3: Check if the filename matches a staff member
+            elif normalized_filename_name in staff_keys:
+                status = "❌ Not a Player"
+            # Final case: Name not found in any list
             else:
-                reason = "❌ Name not in roster"
-                if valid_player_names:
-                    roster_name = valid_player_names[0]
-                    
-                    # --- FIX START ---
-                    # Check if the string can be split into at least two parts
+                #status = "❌ Name not in roster"
+                status = "❌"
+                # Suggest a filename based on the first player's name
+                if player_keys:
+                    roster_name = list(player_keys.values())[0]
                     if " " in roster_name:
                         fn, ln = roster_name.split(" ", 1)
                         suggestion = f"{school_prefix}_{ln.lower()}_{fn.lower()}.png"
-                    # --- FIX END ---
         
         data.append({
             "filename": filename,
-            "school": school,
+            "school": entry.get("school"),
             "last": raw_last,
             "first": raw_first,
-            "status": reason
+            "status": status
         })
 
     return pd.DataFrame(data)
@@ -349,12 +340,12 @@ if st.button("Check Files"):
                 "Double-check the files in the folder."
             )
         else:
-            official_player_names = scrape_player_names(school_url)
+            player_keys, nickname_keys = scrape_player_names(school_url)
             official_staff_names = scrape_staff_names(school_url)
             
-            if not official_player_names and not official_staff_names:
+            if not player_keys and not official_staff_names:
                 st.warning("No names detected from the roster page. Try another URL or check the site structure.")
             else:
-                df = check_mismatches(parsed_files, official_player_names, official_staff_names, school_prefix)
+                df = check_mismatches(parsed_files, player_keys, nickname_keys, official_staff_names, school_prefix)
                 st.subheader("File Check Results")
                 st.dataframe(df)

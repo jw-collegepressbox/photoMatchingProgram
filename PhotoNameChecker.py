@@ -208,7 +208,6 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
                 "first": first.lower(),
                 "last": last.lower() if last else "",
                 "status": "⚠️ Missing",
-                "suggestion": expected_filename,
                 "name": roster_name
             })
 

@@ -133,29 +133,86 @@ def scrape_player_names(url: str):
 
 def scrape_staff_names(url: str):
     """
-    Scrape staff names from a roster page, targeting the 'sidearm-roster-coach' class.
+    Scrape staff names and titles from a roster page.
+    Returns a dictionary: {normalized_name: {"name": original_name, "title": title}}
     """
+    staff_dict = {}
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        found_names = set()
-        
-        # Select all list items that are coaches
-        staff_items = soup.select('li.sidearm-roster-coach')
-        
+
+        # Staff list items (schools often use a specific class)
+        staff_items = soup.select('li.sidearm-roster-coach, .roster-list-item.staff')
+
         for item in staff_items:
-            name_tag = item.find('div', class_='sidearm-roster-coach-name')
-            if name_tag:
-                name = name_tag.find('p').get_text(" ", strip=True)
-                found_names.add(normalize(name))
-                    
-        return list(found_names)
-        
+            # Name
+            name_tag = item.select_one('.sidearm-roster-coach-name p, .roster-list-item__title')
+            if not name_tag:
+                continue
+            name = name_tag.get_text(" ", strip=True)
+            
+            # Title / position
+            title_tag = item.select_one('.sidearm-roster-coach-title span, .roster-list-item__profile-field--position')
+            title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
+
+            staff_dict[normalize(name)] = {"name": name, "title": title}
+        return staff_dict
+
     except Exception as e:
-        st.error(f"Error scraping staff names from URL: {e}")
-        return []
+        st.error(f"Error scraping staff names: {e}")
+        return {}
+
+def generate_expected_filenames(player_keys, school_prefix):
+    """
+    Only generate expected filenames for players (ignore staff).
+    """
+    expected_files = []
+    for normalized_name, original_name in player_keys.items():
+        parts = original_name.split(" ")
+        if len(parts) >= 2:
+            first = parts[0].lower()
+            last = parts[-1].lower()
+            expected_filename = f"{school_prefix}_{last}_{first}.png"
+            expected_files.append(expected_filename)
+    return expected_files
+
+
+def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
+    """
+    Returns a list of missing player files with their expected filename.
+    Staff files are ignored completely.
+    """
+    # Only consider actual file names that are NOT staff
+    existing_player_files = set()
+    for entry in parsed_files:
+        if not entry.get("format_valid", False):
+            continue
+        normalized_name = normalize(f"{entry.get('first','')} {entry.get('last','')}")
+        if normalized_name not in staff_dict:  # ignore staff files
+            existing_player_files.add(normalized_name)
+
+    missing_players = []
+
+    for normalized_name, roster_name in player_keys.items():
+        if normalized_name not in existing_player_files:
+            parts = roster_name.split(" ", 1)
+            if len(parts) == 2:
+                first, last = parts
+            else:
+                first = parts[0]
+                last = ""
+            expected_filename = f"{school_prefix}_{last.lower()}_{first.lower()}.png" if last else f"{school_prefix}_{first.lower()}.png"
+            missing_players.append({
+                "filename": None,
+                "first": first.lower(),
+                "last": last.lower() if last else "",
+                "status": "⚠️ Missing",
+                "suggestion": expected_filename,
+                "name": roster_name
+            })
+
+    return missing_players
 
 
 # --- Google Drive folder helpers (no API) ---
@@ -235,37 +292,36 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
 
 # --- Comparison logic ---
 
-def check_mismatches(parsed_files, player_keys, nickname_keys, official_staff_names, school_prefix):
-    """
-    Checks filenames against player and staff rosters, flagging filenames that use nicknames.
-    """
+def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff_dict, school_prefix):
     data = []
-    
-    valid_staff_names = [n for n in official_staff_names if isinstance(n, str)]
-    staff_keys = {normalize(n): n for n in valid_staff_names}
 
+    # --- Step 1: existing files ---
     for entry in parsed_files:
         filename = entry.get("filename")
         fmt_ok = entry.get("format_valid", False)
-        status = ""
+        raw_last = entry.get("last") or ""
+        raw_first = entry.get("first") or ""
         suggestion = None
+        roster_name = None
 
         if not fmt_ok:
             status = entry.get("format_msg", "Invalid filename format")
         else:
             school = entry["school"]
-            raw_last = entry["last"] or ""
-            raw_first = entry["first"] or ""
-            
-            # The name from the filename, normalized for comparison.
             normalized_filename_name = normalize(f"{raw_first} {raw_last}")
 
-            if school != school_prefix.lower():
+            # Staff first
+            if normalized_filename_name in staff_dict:
+                staff_info = staff_dict[normalized_filename_name]
+                status = f"❌ Not a Player ({staff_info.get('title','Staff')})"
+
+            elif school != school_prefix.lower():
                 status = "❌ School prefix mismatch"
-            # Step 1: Check if the filename name matches a valid first name
+
             elif normalized_filename_name in player_keys:
                 status = "✅"
-            # Step 2: Check if the filename name matches a known nickname
+                roster_name = player_keys[normalized_filename_name]
+
             elif normalized_filename_name in nickname_keys:
                 original_roster_name = nickname_keys[normalized_filename_name]
                 match = re.search(r'(\S+)\s+["“”‘’]', original_roster_name)
@@ -273,31 +329,29 @@ def check_mismatches(parsed_files, player_keys, nickname_keys, official_staff_na
                     first_name = normalize(match.group(1))
                     status = "❌ Nickname used instead of First Name"
                     suggestion = f"{school_prefix}_{raw_last}_{first_name}.png"
+                    roster_name = original_roster_name
                 else:
                     status = "❌ Nickname used instead of First Name"
-            # Step 3: Check if the filename matches a staff member
-            elif normalized_filename_name in staff_keys:
-                status = "❌ Not a Player"
-            # Final case: Name not found in any list
+                    roster_name = original_roster_name
             else:
-                #status = "❌ Name not in roster"
-                status = "❌"
-                # Suggest a filename based on the first player's name
-                if player_keys:
-                    roster_name = list(player_keys.values())[0]
-                    if " " in roster_name:
-                        fn, ln = roster_name.split(" ", 1)
-                        suggestion = f"{school_prefix}_{ln.lower()}_{fn.lower()}.png"
-        
+                status = "❌ Name not in roster"
+
         data.append({
             "filename": filename,
-            "school": entry.get("school"),
-            "last": raw_last,
             "first": raw_first,
-            "status": status
+            "last": raw_last,
+            "status": status,
+            "suggestion": suggestion,
+            "name": roster_name
         })
 
+    # --- Step 2: missing players (ignore staff) ---
+    missing_players = find_missing_players(parsed_files, player_keys, staff_dict, school_prefix)
+    data.extend(missing_players)
+
     return pd.DataFrame(data)
+
+
 
 # --- Streamlit UI (main script) ---
 
@@ -329,23 +383,17 @@ school_url = st.text_input("Paste the school roster URL here:")
 
 if st.button("Check Files"):
     if not image_files:
-        st.error("No image files detected yet. Make sure your source and link/path are correct.")
+        st.error("No image files detected yet.")
     elif not school_prefix or not school_url:
         st.error("Please fill in both the school prefix and the roster URL.")
     else:
         parsed_files = parse_filenames(image_files)
-        if not parsed_files:
-            st.warning(
-                "No filenames matched the expected pattern 'teamabbr_lastname_firstname.png'. "
-                "Double-check the files in the folder."
-            )
+        player_keys, nickname_keys = scrape_player_names(school_url)
+        staff_dict = scrape_staff_names(school_url)
+
+        if not player_keys:
+            st.warning("No players detected from the roster page.")
         else:
-            player_keys, nickname_keys = scrape_player_names(school_url)
-            official_staff_names = scrape_staff_names(school_url)
-            
-            if not player_keys and not official_staff_names:
-                st.warning("No names detected from the roster page. Try another URL or check the site structure.")
-            else:
-                df = check_mismatches(parsed_files, player_keys, nickname_keys, official_staff_names, school_prefix)
-                st.subheader("File Check Results")
-                st.dataframe(df)
+            df = check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff_dict, school_prefix)
+            st.subheader("Roster Photo Check")
+            st.dataframe(df)

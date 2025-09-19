@@ -66,13 +66,19 @@ def parse_filenames(folder_or_files):
 def normalize(name: str) -> str:
     """
     Normalize names to your conventions, including removing nicknames.
+    Handles nicknames in single or double quotes.
     """
     name = name.lower()
-    name = re.sub(r'["“”‘’].*?["“”‘’]', '', name)
+    # Remove nicknames in single or double quotes: "nickname" or 'nickname'
+    name = re.sub(r'(["“”‘’\']).*?\1', '', name)
+    # Remove suffixes like Jr, Sr, II, III
     name = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", name)
+    # Remove accents
     name = unicodedata.normalize("NFD", name)
     name = "".join(c for c in name if not unicodedata.combining(c))
+    # Remove non-word characters except spaces/hyphens
     name = re.sub(r"[^\w\s-]", "", name)
+    # Collapse multiple spaces and trim
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
@@ -103,8 +109,11 @@ def scrape_player_names(url: str):
             ".roster-list-item__title",
             ".player-name",
             "td.sidearm-table-player-name",
-            ".roster-list__item-name"
+            ".roster-list__item-name",
+            "a.table__roster-name",           # ✅ for UCF & similar
+            ".table__roster-name span"        # ✅ backup for nested <span>
         ]
+
         
         for element in soup.select(", ".join(common_player_selectors)):
             name = element.get_text(" ", strip=True)
@@ -208,6 +217,7 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
                 "first": first.lower(),
                 "last": last.lower() if last else "",
                 "status": "⚠️ Missing",
+                "suggestion": expected_filename,
                 "name": roster_name
             })
 
@@ -348,7 +358,6 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
     data.extend(missing_players)
 
     return pd.DataFrame(data)
-
 
 
 # --- Streamlit UI (main script) ---

@@ -341,7 +341,6 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
             "first": raw_first,
             "last": raw_last,
             "status": status,
-            "suggestion": suggestion,
             "name": roster_name
         })
 

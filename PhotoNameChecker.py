@@ -6,7 +6,12 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
-
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 
 # --- Filename parsing ---
 
@@ -82,6 +87,34 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
+def scrape_baylor_players(url):
+    """
+    Scrape Baylor football player names using Selenium.
+    Returns a set of full names.
+    """
+    options = Options()
+    options.add_argument("--headless")  # run in headless mode
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    try:
+        driver.get(url)
+        time.sleep(5)  # wait for JS to render the roster
+
+        # Player names are in divs with class 'sidearm-roster-player-name'
+        name_elements = driver.find_elements(By.CSS_SELECTOR, "div.sidearm-roster-player-name")
+        found_names = set()
+        for el in name_elements:
+            name = el.text.strip()
+            if name:
+                found_names.add(name)
+
+        return found_names
+
+    finally:
+        driver.quit()
 
 def scrape_player_names(url: str):
     """
@@ -90,36 +123,44 @@ def scrape_player_names(url: str):
     - primary_names: {normalized_first_last: original_name}
     - nickname_names: {normalized_nickname_last: original_name}
     """
+    is_baylor = "baylorbears.com" in url.lower()
+    found_names = set()
+
     try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        found_names = set()
-        
-        # Strategy 1: Find all links to full player bios.
-        for a_tag in soup.find_all('a', href=re.compile(r'/roster/.*/\d+')):
-            name = a_tag.get_text(" ", strip=True)
-            if "coach" not in name.lower() and "staff" not in name.lower():
-                found_names.add(name)
-        
-        # Strategy 2: Look for common player name classes
-        common_player_selectors = [
-            ".s-text-regular-bold",  
-            ".roster-list-item__title",
-            ".player-name",
-            "td.sidearm-table-player-name",
-            ".roster-list__item-name",
-            "a.table__roster-name",           # ✅ for UCF & similar
-            ".table__roster-name span"        # ✅ backup for nested <span>
-        ]
+        if is_baylor:
+            # Use Selenium for Baylor
+            found_names = scrape_baylor_players(url)
+        else:
+            # Your existing requests + BeautifulSoup scraping for other schools
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        
-        for element in soup.select(", ".join(common_player_selectors)):
-            name = element.get_text(" ", strip=True)
-            if "coach" not in name.lower() and "staff" not in name.lower():
-                found_names.add(name)
+            # links to full player bios
+            for a_tag in soup.find_all('a', href=re.compile(r'/roster/.*/\d+')):
+                name = a_tag.get_text(" ", strip=True)
+                if "coach" not in name.lower() and "staff" not in name.lower():
+                    found_names.add(name)
 
+            # common player name classes
+            common_player_selectors = [
+                ".s-text-regular-bold",
+                ".roster-list-item__title",
+                ".player-name",
+                "td.sidearm-table-player-name",
+                ".roster-list__item-name",
+                "a.table__roster-name",
+                ".table__roster-name span",
+                "div.sidearm-roster-player-name a",
+                "td.sidearm-roster-table-data a"
+            ]
+
+            for element in soup.select(", ".join(common_player_selectors)):
+                name = element.get_text(" ", strip=True)
+                if "coach" not in name.lower() and "staff" not in name.lower():
+                    found_names.add(name)
+
+        # --- Build primary and nickname dictionaries ---
         primary_names = {}
         nickname_names = {}
 
@@ -127,18 +168,17 @@ def scrape_player_names(url: str):
             match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
             if match:
                 first_name, nickname, last_name = match.groups()
-                # Store the correct name in the primary dictionary
                 primary_names[normalize(f"{first_name} {last_name}")] = name
-                # Store the nickname in the nickname dictionary
                 nickname_names[normalize(f"{nickname} {last_name}")] = name
             else:
                 primary_names[normalize(name)] = name
-        
+
         return primary_names, nickname_names
 
     except Exception as e:
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
+
 
 def scrape_staff_names(url: str):
     """
@@ -358,8 +398,6 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
     data.extend(missing_players)
 
     return pd.DataFrame(data)
-
-
 # --- Streamlit UI (main script) ---
 
 st.title("School Roster Photo Name Checker (Local or Google Drive Folder)")

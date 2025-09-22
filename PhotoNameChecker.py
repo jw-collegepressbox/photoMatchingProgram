@@ -17,8 +17,8 @@ import time
 
 def parse_filenames(folder_or_files):
     """
-    Strict parse: only accept filenames with exactly TWO underscores: team_last_first.png
-    Keeps invalid-format files too so they show up in results.
+    Strict parse: only accept filenames in the format team_last_first.png.
+    Marks files invalid if they are missing parts or improperly formatted.
     """
     parsed = []
     for file in folder_or_files:
@@ -27,7 +27,8 @@ def parse_filenames(folder_or_files):
             continue
 
         base = name[:-4]
-        # require exactly two underscores
+
+        # Must contain exactly two underscores
         if base.count("_") != 2:
             parsed.append({
                 "filename": name,
@@ -39,22 +40,22 @@ def parse_filenames(folder_or_files):
             })
             continue
 
-        parts = base.split("_")
-        # now parts length should be exactly 3
-        if len(parts) != 3:
+        parts = base.split("_")  # should be [school, last, first]
+        if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
+            # Empty last or first name
             parsed.append({
                 "filename": name,
                 "school": None,
                 "last": None,
                 "first": None,
                 "format_valid": False,
-                "format_msg": "Unexpected parsing result"
+                "format_msg": "Missing last or first name"
             })
             continue
 
-        school = parts[0].lower()
-        last = parts[1].lower()
-        first = parts[2].lower()
+        school = parts[0].lower().strip()
+        last = parts[1].lower().strip()
+        first = parts[2].lower().strip()
 
         parsed.append({
             "filename": name,
@@ -64,6 +65,7 @@ def parse_filenames(folder_or_files):
             "format_valid": True,
             "format_msg": None
         })
+
     return parsed
 
 # --- Normalization / roster scraping ---
@@ -119,30 +121,26 @@ def scrape_baylor_players(url):
 def scrape_player_names(url: str):
     """
     Scrape player names and nicknames from a roster page.
-    Returns two dictionaries:
-    - primary_names: {normalized_first_last: original_name}
-    - nickname_names: {normalized_nickname_last: original_name}
     """
     is_baylor = "baylorbears.com" in url.lower()
     found_names = set()
 
+    # Keywords to filter out non-player entries
+    invalid_keywords = [
+        "roster", "news", "schedule", "statistics", "videos",
+        "links", "gameday", "staff", "coach", "bio", "media",
+        "ireland", "tarheels2ireland", "central", "additional",
+        "more", "results", "events", "©"
+    ]
+
     try:
         if is_baylor:
-            # Use Selenium for Baylor
             found_names = scrape_baylor_players(url)
         else:
-            # Your existing requests + BeautifulSoup scraping for other schools
             resp = requests.get(url, timeout=20)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # links to full player bios
-            for a_tag in soup.find_all('a', href=re.compile(r'/roster/.*/\d+')):
-                name = a_tag.get_text(" ", strip=True)
-                if "coach" not in name.lower() and "staff" not in name.lower():
-                    found_names.add(name)
-
-            # common player name classes
             common_player_selectors = [
                 ".s-text-regular-bold",
                 ".roster-list-item__title",
@@ -150,17 +148,20 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                ".table__roster-name span",
-                "div.sidearm-roster-player-name a",
                 "td.sidearm-roster-table-data a"
             ]
 
             for element in soup.select(", ".join(common_player_selectors)):
                 name = element.get_text(" ", strip=True)
-                if "coach" not in name.lower() and "staff" not in name.lower():
+                lower_name = name.lower()
+
+                # Add this new check to skip invalid keywords
+                if any(word in lower_name for word in invalid_keywords):
+                    continue
+
+                if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
                     found_names.add(name)
 
-        # --- Build primary and nickname dictionaries ---
         primary_names = {}
         nickname_names = {}
 
@@ -179,7 +180,6 @@ def scrape_player_names(url: str):
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
 
-
 def scrape_staff_names(url: str):
     """
     Scrape staff names and titles from a roster page.
@@ -191,21 +191,45 @@ def scrape_staff_names(url: str):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Staff list items (schools often use a specific class)
-        staff_items = soup.select('li.sidearm-roster-coach, .roster-list-item.staff')
+        # Selectors for various staff list formats
+        staff_items = soup.select('li.sidearm-roster-coach, .roster-list-item.staff, tr[data-v-7436a2c8]')
+        
+        # New selector for h3 name format
+        h3_staff_names = soup.select('a[href*="/roster/staff/"] h3')
 
+        # Process standard staff list formats
         for item in staff_items:
-            # Name
-            name_tag = item.select_one('.sidearm-roster-coach-name p, .roster-list-item__title')
+            # Check for the UNC-specific format within the table row
+            if 'tr' in item.name and item.has_attr('data-v-7436a2c8'):
+                name_tag = item.select_one('td:first-of-type .s-text-regular-bold')
+                title_tag = item.select_one('td:last-of-type span')
+            else:
+                name_tag = item.select_one('.sidearm-roster-coach-name p, .roster-list-item__title')
+                title_tag = item.select_one('.sidearm-roster-coach-title span, .roster-list-item__profile-field--position')
+
             if not name_tag:
                 continue
+
             name = name_tag.get_text(" ", strip=True)
-            
-            # Title / position
-            title_tag = item.select_one('.sidearm-roster-coach-title span, .roster-list-item__profile-field--position')
             title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
 
+            if "bio" in name.lower() or "view" in name.lower():
+                continue
+
             staff_dict[normalize(name)] = {"name": name, "title": title}
+        
+        # Process new h3 name format
+        for name_h3 in h3_staff_names:
+            name = name_h3.get_text(" ", strip=True)
+            # You may need to add logic to find the title, depending on its location relative to the h3
+            staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
+            
+        # Additional check for UNC format where coaches are listed in a separate table
+        coach_names = soup.select('a[href*="/coaches/"] span.s-text-regular-bold')
+        for name_span in coach_names:
+            name = name_span.get_text(" ", strip=True)
+            staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
+        
         return staff_dict
 
     except Exception as e:
@@ -228,11 +252,6 @@ def generate_expected_filenames(player_keys, school_prefix):
 
 
 def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
-    """
-    Returns a list of missing player files with their expected filename.
-    Staff files are ignored completely.
-    """
-    # Only consider actual file names that are NOT staff
     existing_player_files = set()
     for entry in parsed_files:
         if not entry.get("format_valid", False):
@@ -244,6 +263,14 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
     missing_players = []
 
     for normalized_name, roster_name in player_keys.items():
+        # 🆕 Add this check to explicitly skip staff members
+        if normalized_name in staff_dict:
+            continue
+
+        # Skip any roster names that are clearly not real players
+        if roster_name.lower() in ["full bio", "view full bio"]:
+            continue  # skip fake entries
+
         if normalized_name not in existing_player_files:
             parts = roster_name.split(" ", 1)
             if len(parts) == 2:
@@ -262,7 +289,6 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
             })
 
     return missing_players
-
 
 # --- Google Drive folder helpers (no API) ---
 
@@ -343,6 +369,8 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
 
 def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff_dict, school_prefix):
     data = []
+    # Inside check_mismatches_and_missing
+    parsed_files = [f for f in parsed_files if f.get("format_valid", False)]
 
     # --- Step 1: existing files ---
     for entry in parsed_files:
@@ -398,6 +426,7 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
     data.extend(missing_players)
 
     return pd.DataFrame(data)
+
 # --- Streamlit UI (main script) ---
 
 st.title("School Roster Photo Name Checker (Local or Google Drive Folder)")
@@ -433,12 +462,41 @@ if st.button("Check Files"):
         st.error("Please fill in both the school prefix and the roster URL.")
     else:
         parsed_files = parse_filenames(image_files)
+
+        # --- Scrape players and staff ---
         player_keys, nickname_keys = scrape_player_names(school_url)
         staff_dict = scrape_staff_names(school_url)
+
+        # --- Remove staff accidentally scraped as players ---
+        for staff_name in list(staff_dict.keys()):
+            if staff_name in player_keys:
+                del player_keys[staff_name]
+            if staff_name in nickname_keys:
+                del nickname_keys[staff_name]
+
+        # --- Remove non-player entries using invalid keywords ---
+        invalid_keywords = [
+            "coach", "staff", "jersey", "number", "manager", "director",
+            "head coach", "assistant", "trainer", "operations"
+        ]
+        for key in list(player_keys.keys()):
+            lower_name = player_keys[key].lower()
+            if any(word in lower_name for word in invalid_keywords):
+                del player_keys[key]
+                if key in nickname_keys:
+                    del nickname_keys[key]
 
         if not player_keys:
             st.warning("No players detected from the roster page.")
         else:
-            df = check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff_dict, school_prefix)
+            df = check_mismatches_and_missing(
+                parsed_files, player_keys, nickname_keys, staff_dict, school_prefix
+            )
             st.subheader("Roster Photo Check")
             st.dataframe(df)
+# --- Scrape players and staff ---
+player_keys, nickname_keys = scrape_player_names(school_url)
+staff_dict = scrape_staff_names(school_url)
+
+st.subheader("Debug: Staff Dictionary Contents")
+st.write(staff_dict)

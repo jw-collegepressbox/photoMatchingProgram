@@ -130,7 +130,7 @@ def scrape_player_names(url: str):
         "roster", "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
-        "more", "results", "events", "©"
+        "more", "results", "events", "©", "menu"
     ]
 
     try:
@@ -148,7 +148,8 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                "td.sidearm-roster-table-data a"
+                "td.sidearm-roster-table-data a",
+                "td > a[href*='/roster/season/']" # Added for Clemson player roster format
             ]
 
             for element in soup.select(", ".join(common_player_selectors)):
@@ -197,6 +198,12 @@ def scrape_staff_names(url: str):
         # New selector for h3 name format
         h3_staff_names = soup.select('a[href*="/roster/staff/"] h3')
 
+        # Added selector for Clemson's staff table format
+        staff_rows = soup.select('tr.person__item')
+
+        # Added selector for Georgia Tech's staff table format
+        gt_staff_rows = soup.select('tr:has(td > a[href*="/coaches/"])')
+
         # Process standard staff list formats
         for item in staff_items:
             # Check for the UNC-specific format within the table row
@@ -221,9 +228,27 @@ def scrape_staff_names(url: str):
         # Process new h3 name format
         for name_h3 in h3_staff_names:
             name = name_h3.get_text(" ", strip=True)
-            # You may need to add logic to find the title, depending on its location relative to the h3
             staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
-            
+
+        # Process the new Clemson staff table format
+        for row in staff_rows:
+            name_tag = row.select_one('td:first-of-type a')
+            title_tag = row.select_one('td:nth-of-type(2)')
+            if name_tag and title_tag:
+                name = name_tag.get_text(" ", strip=True)
+                title = title_tag.get_text(" ", strip=True)
+                staff_dict[normalize(name)] = {"name": name, "title": title}
+        
+        # Process the new Georgia Tech staff table format
+        for row in gt_staff_rows:
+            name_tag = row.select_one('td > a[href*="/coaches/"]')
+            title_tag = name_tag.parent.find_next_sibling('td')
+            if name_tag and title_tag:
+                name = name_tag.get_text(" ", strip=True)
+                title = title_tag.get_text(" ", strip=True)
+                staff_dict[normalize(name)] = {"name": name, "title": title}
+
+
         # Additional check for UNC format where coaches are listed in a separate table
         coach_names = soup.select('a[href*="/coaches/"] span.s-text-regular-bold')
         for name_span in coach_names:
@@ -235,6 +260,7 @@ def scrape_staff_names(url: str):
     except Exception as e:
         st.error(f"Error scraping staff names: {e}")
         return {}
+
 
 def generate_expected_filenames(player_keys, school_prefix):
     """
@@ -494,9 +520,7 @@ if st.button("Check Files"):
             )
             st.subheader("Roster Photo Check")
             st.dataframe(df)
-# --- Scrape players and staff ---
-player_keys, nickname_keys = scrape_player_names(school_url)
-staff_dict = scrape_staff_names(school_url)
 
 st.subheader("Debug: Staff Dictionary Contents")
-st.write(staff_dict)
+if 'staff_dict' in locals():
+    st.write(staff_dict)

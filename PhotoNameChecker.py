@@ -127,10 +127,10 @@ def scrape_player_names(url: str):
 
     # Keywords to filter out non-player entries
     invalid_keywords = [
-        "roster", "news", "schedule", "statistics", "videos",
+        "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
-        "more", "results", "events", "©", "menu"
+        "more", "results", "events", "©"
     ]
 
     try:
@@ -149,7 +149,11 @@ def scrape_player_names(url: str):
                 ".roster-list__item-name",
                 "a.table__roster-name",
                 "td.sidearm-roster-table-data a",
-                "td > a[href*='/roster/season/']" # Added for Clemson player roster format
+                "td > a[href*='/roster/season/']",
+                "a.table__roster-name span",
+                'div[data-test-id="s-person-details__personal-single-line"] h3',
+                # Updated selector to be more specific for Virginia players
+                'a[href*="/player/"]'
             ]
 
             for element in soup.select(", ".join(common_player_selectors)):
@@ -204,6 +208,15 @@ def scrape_staff_names(url: str):
         # Added selector for Georgia Tech's staff table format
         gt_staff_rows = soup.select('tr:has(td > a[href*="/coaches/"])')
 
+        # New selector for Stanford's staff format
+        stanford_staff_links = soup.select('a.table__roster-name[href*="/staff/"]')
+        
+        # New selector for Virginia Tech staff (using the same class as players, but filtering by URL)
+        vt_staff_links = soup.select('a.roster-list-item__title[href*="/staff/"]')
+
+        # New selector for Virginia coaches
+        uva_coach_links = soup.select('a[href*="/coach/"]')
+
         # Process standard staff list formats
         for item in staff_items:
             # Check for the UNC-specific format within the table row
@@ -247,6 +260,31 @@ def scrape_staff_names(url: str):
                 name = name_tag.get_text(" ", strip=True)
                 title = title_tag.get_text(" ", strip=True)
                 staff_dict[normalize(name)] = {"name": name, "title": title}
+
+        # Process the new Stanford staff format
+        for link in stanford_staff_links:
+            name_span = link.select_one('span')
+            if name_span:
+                name = name_span.get_text(" ", strip=True)
+                staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
+
+        # New selector for Syracuse staff
+        syracuse_staff_links = soup.select('div[data-test-id="s-person-details__personal-single-line"] a[href*="/roster/staff/"]')
+        for link in syracuse_staff_links:
+            name_tag = link.select_one('h3')
+            if name_tag:
+                name = name_tag.get_text(" ", strip=True)
+                staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
+        
+        # Process new Virginia Tech staff format
+        for link in vt_staff_links:
+            name = link.get_text(" ", strip=True)
+            staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
+
+        # New selector for Virginia coaches
+        for link in uva_coach_links:
+            name = link.get_text(" ", strip=True)
+            staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
 
 
         # Additional check for UNC format where coaches are listed in a separate table

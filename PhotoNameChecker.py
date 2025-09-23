@@ -130,7 +130,7 @@ def scrape_player_names(url: str):
         "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
-        "more", "results", "events", "©"
+        "more", "results", "events", "©", "menu", "25fb"
     ]
 
     try:
@@ -148,11 +148,10 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                "td.sidearm-roster-table-data a",
+                "td.sidearm-roster-table-data a[title]",  # ✅ catches Baylor player links
                 "td > a[href*='/roster/season/']",
                 "a.table__roster-name span",
                 'div[data-test-id="s-person-details__personal-single-line"] h3',
-                # Updated selector to be more specific for Virginia players
                 'a[href*="/player/"]'
             ]
 

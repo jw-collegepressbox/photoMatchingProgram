@@ -98,21 +98,16 @@ def scrape_baylor_players(url: str):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Grab all roster table rows
-        rows = soup.select("tr.sidearm-roster-table-row")
-        for row in rows:
-            link = row.select_one("a[href*='/roster/']")
-            if link:
-                full_name = link.get_text(" ", strip=True)
-                if full_name:
-                    normalized = normalize(full_name)
-                    primary_names[normalized] = full_name
+        # Baylor uses sidearm-roster-list-item-name > a for players
+        for a in soup.select("li.sidearm-roster-list-item div.sidearm-roster-player-name a"):
+            full_name = a.get_text(" ", strip=True)
+            if full_name:
+                primary_names[normalize(full_name)] = full_name
 
-        return primary_names, nickname_names  # tuple of dicts, as expected
+        return primary_names, nickname_names
 
     except Exception as e:
-        import streamlit as st
-        st.error(f"Error scraping player names from Baylor URL: {e}")
+        st.error(f"Error scraping Baylor player names: {e}")
         return {}, {}
 
 
@@ -284,13 +279,21 @@ def scrape_staff_names(url: str):
             name = link.get_text(" ", strip=True)
             staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
 
-
         # Additional check for UNC format where coaches are listed in a separate table
         coach_names = soup.select('a[href*="/coaches/"] span.s-text-regular-bold')
         for name_span in coach_names:
             name = name_span.get_text(" ", strip=True)
             staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
-        
+
+        # 🟢 Baylor-specific staff scraping — ADDITION
+        for li in soup.select("li.sidearm-roster-staff-item"):
+            name_tag = li.select_one(".sidearm-roster-staff-name")
+            title_tag = li.select_one(".sidearm-roster-staff-title")
+            if name_tag:
+                name = name_tag.get_text(" ", strip=True)
+                title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
+                staff_dict[normalize(name)] = {"name": name, "title": title}
+
         return staff_dict
 
     except Exception as e:

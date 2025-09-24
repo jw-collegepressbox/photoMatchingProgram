@@ -89,107 +89,56 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_baylor_players_selenium(url: str):
-    """
-    Scrape Baylor roster using Selenium to handle dynamic content.
-    Returns primary_names and nickname_names dictionaries.
-    """
+def scrape_baylor_players(url: str):
     primary_names = {}
     nickname_names = {}
 
-    # --- Setup headless Chrome ---
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
     try:
-        driver.get(url)
-        time.sleep(3)  # wait for page to load (adjust if needed)
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Grab all roster rows
-        rows = driver.find_elements(By.CSS_SELECTOR, "tr.sidearm-roster-table-row")
+        # Grab all roster table rows
+        rows = soup.select("tr.sidearm-roster-table-row")
         for row in rows:
-            try:
-                link = row.find_element(By.CSS_SELECTOR, "a[href*='/roster/']")
-                full_name = link.text.strip()
+            link = row.select_one("a[href*='/roster/']")
+            if link:
+                full_name = link.get_text(" ", strip=True)
                 if full_name:
                     normalized = normalize(full_name)
                     primary_names[normalized] = full_name
-            except:
-                continue  # skip rows without player link
 
-        return primary_names, nickname_names
+        return primary_names, nickname_names  # tuple of dicts, as expected
 
     except Exception as e:
-        st.error(f"Selenium scraping error for Baylor: {e}")
+        import streamlit as st
+        st.error(f"Error scraping player names from Baylor URL: {e}")
         return {}, {}
-
-    finally:
-        driver.quit()
-
 
 
 def scrape_player_names(url: str):
     """
     Scrape player names and nicknames from a roster page.
-    Uses Selenium for Baylor, BeautifulSoup for other schools.
     """
-    lower_url = url.lower()
+    is_baylor = "baylorbears.com" in url.lower()
+    found_names = set()
 
-    # --- School-specific invalid keywords ---
-    general_invalid_keywords = [
+    # Keywords to filter out non-player entries
+    invalid_keywords = [
         "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
         "more", "results", "events", "©", "menu", "25fb"
     ]
-    baylor_invalid_keywords = general_invalid_keywords + [
-        "news", "schedule", "statistics", "videos",
-        "links", "gameday", "bio", "media", "view", "full bio"
-    ]
-
-    # Select appropriate list
-    if "baylorbears.com" in lower_url:
-        invalid_keywords = baylor_invalid_keywords
-        use_selenium = True
-    else:
-        invalid_keywords = general_invalid_keywords
-        use_selenium = False
-
-    primary_names = {}
-    nickname_names = {}
 
     try:
-        if use_selenium:
-            # --- Selenium setup ---
-            options = Options()
-            options.add_argument("--headless")
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            driver.get(url)
-            time.sleep(3)  # wait for roster to load
-
-            rows = driver.find_elements(By.CSS_SELECTOR, "tr.sidearm-roster-table-row")
-            for row in rows:
-                link = row.find_element(By.CSS_SELECTOR, "a[href*='/roster/']")
-                if link:
-                    full_name = link.text.strip()
-                    if full_name and not any(word in full_name.lower() for word in invalid_keywords):
-                        normalized = normalize(full_name)
-                        primary_names[normalized] = full_name
-
-            driver.quit()
-            return primary_names, nickname_names
-
+        if is_baylor:
+            return scrape_baylor_players(url)
         else:
-            # --- Existing BeautifulSoup scraping ---
             resp = requests.get(url, timeout=20)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            found_names = set()
             common_player_selectors = [
                 ".s-text-regular-bold",
                 ".roster-list-item__title",
@@ -197,8 +146,9 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                "td.sidearm-roster-table-data a[title]",
+                "td.sidearm-roster-table-data a[title]",  # ✅ catches Baylor player links
                 "td > a[href*='/roster/season/']",
+                "a.table__roster-name span",
                 'div[data-test-id="s-person-details__personal-single-line"] h3',
                 'a[href*="/player/"]'
             ]
@@ -206,19 +156,31 @@ def scrape_player_names(url: str):
             for element in soup.select(", ".join(common_player_selectors)):
                 name = element.get_text(" ", strip=True)
                 lower_name = name.lower()
-                if name and not any(word in lower_name for word in invalid_keywords):
+
+                # Add this new check to skip invalid keywords
+                if any(word in lower_name for word in invalid_keywords):
+                    continue
+
+                if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
                     found_names.add(name)
 
-            # Normalize names
-            for name in found_names:
+        primary_names = {}
+        nickname_names = {}
+
+        for name in found_names:
+            match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
+            if match:
+                first_name, nickname, last_name = match.groups()
+                primary_names[normalize(f"{first_name} {last_name}")] = name
+                nickname_names[normalize(f"{nickname} {last_name}")] = name
+            else:
                 primary_names[normalize(name)] = name
 
-            return primary_names, nickname_names
+        return primary_names, nickname_names
 
     except Exception as e:
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
-
 
 def scrape_staff_names(url: str):
     """

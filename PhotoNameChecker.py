@@ -115,8 +115,6 @@ def scrape_baylor_players(url):
         st.error(f"Error scraping Baylor player names: {e}")
         return set()
 
-
-
 def scrape_player_names(url: str):
     """
     Scrape player names and nicknames from a roster page.
@@ -147,7 +145,6 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                "td.sidearm-roster-table-data a[title]",  # ✅ catches Baylor player links
                 "td > a[href*='/roster/season/']",
                 "a.table__roster-name span",
                 'div[data-test-id="s-person-details__personal-single-line"] h3',

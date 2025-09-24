@@ -89,7 +89,7 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_player_names(url: str):
+def scrape_baylor_players(url: str):
     primary_names = {}
     nickname_names = {}
     try:

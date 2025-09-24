@@ -89,45 +89,62 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_baylor_players(url: str):
+def scrape_baylor_players_selenium(url: str):
+    """
+    Scrape Baylor roster using Selenium to handle dynamic content.
+    Returns primary_names and nickname_names dictionaries.
+    """
     primary_names = {}
     nickname_names = {}
 
-    try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+    # --- Setup headless Chrome ---
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
-        # Grab all roster table rows
-        rows = soup.select("tr.sidearm-roster-table-row")
+    try:
+        driver.get(url)
+        time.sleep(3)  # wait for page to load (adjust if needed)
+
+        # Grab all roster rows
+        rows = driver.find_elements(By.CSS_SELECTOR, "tr.sidearm-roster-table-row")
         for row in rows:
-            link = row.select_one("a[href*='/roster/']")
-            if link:
-                full_name = link.get_text(" ", strip=True)
+            try:
+                link = row.find_element(By.CSS_SELECTOR, "a[href*='/roster/']")
+                full_name = link.text.strip()
                 if full_name:
                     normalized = normalize(full_name)
                     primary_names[normalized] = full_name
+            except:
+                continue  # skip rows without player link
 
-        return primary_names, nickname_names  # tuple of dicts, as expected
+        return primary_names, nickname_names
 
     except Exception as e:
-        import streamlit as st
-        st.error(f"Error scraping player names from Baylor URL: {e}")
+        st.error(f"Selenium scraping error for Baylor: {e}")
         return {}, {}
+
+    finally:
+        driver.quit()
+
 
 
 def scrape_player_names(url: str):
     """
     Scrape player names and nicknames from a roster page.
-    Uses school-specific invalid keywords to filter out non-player entries.
+    Uses Selenium for Baylor, BeautifulSoup for other schools.
     """
-    found_names = set()
     lower_url = url.lower()
 
     # --- School-specific invalid keywords ---
     general_invalid_keywords = [
-        "coach", "staff", "jersey", "number", "manager", "director",
-        "head coach", "assistant", "trainer", "operations"
+        "news", "schedule", "statistics", "videos",
+        "links", "gameday", "staff", "coach", "bio", "media",
+        "ireland", "tarheels2ireland", "central", "additional",
+        "more", "results", "events", "©", "menu", "25fb"
     ]
     baylor_invalid_keywords = general_invalid_keywords + [
         "news", "schedule", "statistics", "videos",
@@ -137,62 +154,66 @@ def scrape_player_names(url: str):
     # Select appropriate list
     if "baylorbears.com" in lower_url:
         invalid_keywords = baylor_invalid_keywords
-        is_baylor = True
+        use_selenium = True
     else:
         invalid_keywords = general_invalid_keywords
-        is_baylor = False
+        use_selenium = False
 
     primary_names = {}
     nickname_names = {}
 
     try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        if use_selenium:
+            # --- Selenium setup ---
+            options = Options()
+            options.add_argument("--headless")
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            driver.get(url)
+            time.sleep(3)  # wait for roster to load
 
-        # --- Scrape Baylor separately (simpler and more reliable) ---
-        if is_baylor:
-            rows = soup.select("tr.sidearm-roster-table-row")
+            rows = driver.find_elements(By.CSS_SELECTOR, "tr.sidearm-roster-table-row")
             for row in rows:
-                link = row.select_one("a[href*='/roster/']")
+                link = row.find_element(By.CSS_SELECTOR, "a[href*='/roster/']")
                 if link:
-                    full_name = link.get_text(" ", strip=True)
+                    full_name = link.text.strip()
                     if full_name and not any(word in full_name.lower() for word in invalid_keywords):
                         normalized = normalize(full_name)
                         primary_names[normalized] = full_name
+
+            driver.quit()
             return primary_names, nickname_names
 
-        # --- Other schools ---
-        common_player_selectors = [
-            ".s-text-regular-bold",
-            ".roster-list-item__title",
-            ".player-name",
-            "td.sidearm-table-player-name",
-            ".roster-list__item-name",
-            "a.table__roster-name",
-            "td.sidearm-roster-table-data a[title]",
-            "td > a[href*='/roster/season/']",
-            'div[data-test-id="s-person-details__personal-single-line"] h3',
-            'a[href*="/player/"]'
-        ]
+        else:
+            # --- Existing BeautifulSoup scraping ---
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        for element in soup.select(", ".join(common_player_selectors)):
-            name = element.get_text(" ", strip=True)
-            lower_name = name.lower()
-            if name and not any(word in lower_name for word in invalid_keywords):
-                found_names.add(name)
+            found_names = set()
+            common_player_selectors = [
+                ".s-text-regular-bold",
+                ".roster-list-item__title",
+                ".player-name",
+                "td.sidearm-table-player-name",
+                ".roster-list__item-name",
+                "a.table__roster-name",
+                "td.sidearm-roster-table-data a[title]",
+                "td > a[href*='/roster/season/']",
+                'div[data-test-id="s-person-details__personal-single-line"] h3',
+                'a[href*="/player/"]'
+            ]
 
-        # Normalize names and detect nicknames
-        for name in found_names:
-            match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
-            if match:
-                first_name, nickname, last_name = match.groups()
-                primary_names[normalize(f"{first_name} {last_name}")] = name
-                nickname_names[normalize(f"{nickname} {last_name}")] = name
-            else:
+            for element in soup.select(", ".join(common_player_selectors)):
+                name = element.get_text(" ", strip=True)
+                lower_name = name.lower()
+                if name and not any(word in lower_name for word in invalid_keywords):
+                    found_names.add(name)
+
+            # Normalize names
+            for name in found_names:
                 primary_names[normalize(name)] = name
 
-        return primary_names, nickname_names
+            return primary_names, nickname_names
 
     except Exception as e:
         st.error(f"Error scraping player names from URL: {e}")

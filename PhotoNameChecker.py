@@ -89,31 +89,29 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_baylor_players(url):
-    """
-    Scrape Baylor football player names from the roster page using requests + BeautifulSoup.
-    Returns a set of full names.
-    """
+def scrape_player_names(url: str):
+    primary_names = {}
+    nickname_names = {}
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        found_names = set()
-        # Each player row is <tr class="sidearm-roster-table-row">
-        for row in soup.select("tr.sidearm-roster-table-row"):
-            # The <a> inside <td> has the player name in title
-            link = row.select_one("td.sidearm-roster-table-data a[title]")
+        # Grab all roster table rows
+        rows = soup.select("tr.sidearm-roster-table-row")
+        for row in rows:
+            link = row.select_one("a[href*='/roster/']")
             if link:
-                name = link["title"].strip()
-                if name:
-                    found_names.add(name)
+                full_name = link.get_text(" ", strip=True)
+                if full_name:
+                    primary_names[normalize(full_name)] = full_name
 
-        return found_names
+        return primary_names, nickname_names
 
     except Exception as e:
-        st.error(f"Error scraping Baylor player names: {e}")
-        return set()
+        import streamlit as st
+        st.error(f"Error scraping player names from URL: {e}")
+        return {}, {}
 
 def scrape_player_names(url: str):
     """

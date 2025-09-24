@@ -89,34 +89,30 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_baylor_players(url):
+def scrape_baylor_players_bs(url):
     """
-    Scrape Baylor football player names using Selenium.
+    Scrape Baylor football player names using requests + BeautifulSoup.
     Returns a set of full names.
     """
-    options = Options()
-    options.add_argument("--headless")  # run in headless mode
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
     try:
-        driver.get(url)
-        time.sleep(5)  # wait for JS to render the roster
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Player names are in divs with class 'sidearm-roster-player-name'
-        name_elements = driver.find_elements(By.CSS_SELECTOR, "div.sidearm-roster-player-name")
+        # Player names are in <td class="sidearm-roster-player-name"> <a>Player Name</a> </td>
+        name_elements = soup.select("td.sidearm-roster-player-name a")
         found_names = set()
         for el in name_elements:
-            name = el.text.strip()
+            name = el.get_text(strip=True)
             if name:
                 found_names.add(name)
 
         return found_names
 
-    finally:
-        driver.quit()
+    except Exception as e:
+        st.error(f"Error scraping Baylor players: {e}")
+        return set()
+
 
 def scrape_player_names(url: str):
     """
@@ -135,7 +131,7 @@ def scrape_player_names(url: str):
 
     try:
         if is_baylor:
-            found_names = scrape_baylor_players(url)
+            found_names = scrape_baylor_players_bs(url)
         else:
             resp = requests.get(url, timeout=20)
             resp.raise_for_status()

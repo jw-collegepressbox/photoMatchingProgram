@@ -128,7 +128,7 @@ def scrape_player_names(url: str):
         "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
-        "more", "results", "events", "©", "menu", "25fb"
+        "more", "results", "events", "©", "menu", "25fb", "2025"
     ]
 
     try:

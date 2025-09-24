@@ -89,9 +89,9 @@ def normalize(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
     return name
 
-def scrape_baylor_players_bs(url):
+def scrape_baylor_players(url):
     """
-    Scrape Baylor football player names using requests + BeautifulSoup.
+    Scrape Baylor football player names from the roster page using requests + BeautifulSoup.
     Returns a set of full names.
     """
     try:
@@ -99,19 +99,22 @@ def scrape_baylor_players_bs(url):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Player names are in <td class="sidearm-roster-player-name"> <a>Player Name</a> </td>
-        name_elements = soup.select("td.sidearm-roster-player-name a")
         found_names = set()
-        for el in name_elements:
-            name = el.get_text(strip=True)
-            if name:
-                found_names.add(name)
+        # Each player row is <tr class="sidearm-roster-table-row">
+        for row in soup.select("tr.sidearm-roster-table-row"):
+            # The <a> inside <td> has the player name in title
+            link = row.select_one("td.sidearm-roster-table-data a[title]")
+            if link:
+                name = link["title"].strip()
+                if name:
+                    found_names.add(name)
 
         return found_names
 
     except Exception as e:
-        st.error(f"Error scraping Baylor players: {e}")
+        st.error(f"Error scraping Baylor player names: {e}")
         return set()
+
 
 
 def scrape_player_names(url: str):
@@ -131,7 +134,7 @@ def scrape_player_names(url: str):
 
     try:
         if is_baylor:
-            found_names = scrape_baylor_players_bs(url)
+            found_names = scrape_baylor_players(url)
         else:
             resp = requests.get(url, timeout=20)
             resp.raise_for_status()

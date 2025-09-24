@@ -612,13 +612,3 @@ if st.button("Check Files"):
 st.subheader("Debug: Staff Dictionary Contents")
 if 'staff_dict' in locals():
     st.write(staff_dict)
-
-url = "https://baylorbears.com/sports/football/roster"
-resp = requests.get(url)
-soup = BeautifulSoup(resp.text, "html.parser")
-
-# Print all divs with the player class
-players = soup.select("div.sidearm-roster-list-item-name.sidearm-roster-player-name a")
-print(f"Found {len(players)} players")
-for p in players:
-    print(p.get_text(strip=True))

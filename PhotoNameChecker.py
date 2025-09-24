@@ -90,28 +90,41 @@ def normalize(name: str) -> str:
     return name
 
 def scrape_baylor_players(url: str):
+    """
+    Scrape Baylor football player names from the roster page.
+    Returns: primary_names, nickname_names
+    """
     primary_names = {}
     nickname_names = {}
+
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Grab all roster table rows
+        # Baylor players are in <tr class="sidearm-roster-table-row">
         rows = soup.select("tr.sidearm-roster-table-row")
         for row in rows:
             link = row.select_one("a[href*='/roster/']")
             if link:
                 full_name = link.get_text(" ", strip=True)
                 if full_name:
-                    primary_names[normalize(full_name)] = full_name
+                    # handle nicknames like John "Johnny" Smith
+                    match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(\S+)', full_name)
+                    if match:
+                        first, nickname, last = match.groups()
+                        primary_names[normalize(f"{first} {last}")] = full_name
+                        nickname_names[normalize(f"{nickname} {last}")] = full_name
+                    else:
+                        primary_names[normalize(full_name)] = full_name
 
         return primary_names, nickname_names
 
     except Exception as e:
         import streamlit as st
-        st.error(f"Error scraping player names from URL: {e}")
+        st.error(f"Error scraping Baylor player names: {e}")
         return {}, {}
+
 
 def scrape_player_names(url: str):
     """
@@ -143,6 +156,7 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
+                "td.sidearm-roster-table-data a[title]",  # ✅ catches Baylor player links
                 "td > a[href*='/roster/season/']",
                 "a.table__roster-name span",
                 'div[data-test-id="s-person-details__personal-single-line"] h3',

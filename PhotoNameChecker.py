@@ -90,35 +90,88 @@ def normalize(name: str) -> str:
     return name
 
 def scrape_baylor_players(url: str):
+    import time
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from webdriver_manager.chrome import ChromeDriverManager
+
     primary_names = {}
     nickname_names = {}
 
     try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        options = Options()
+        options.headless = True  # run without opening a browser window
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver.get(url)
 
-        # Baylor uses sidearm-roster-list-item-name > a for players
-        for a in soup.select("li.sidearm-roster-list-item div.sidearm-roster-player-name a"):
-            full_name = a.get_text(" ", strip=True)
+        # Wait for the JavaScript roster to fully load
+        time.sleep(3)
+
+        # Select the player links
+        players = driver.find_elements(By.CSS_SELECTOR, "div.sidearm-roster-list-item-name.sidearm-roster-player-name a")
+
+        for p in players:
+            full_name = p.text.strip()
             if full_name:
                 primary_names[normalize(full_name)] = full_name
 
+        driver.quit()
         return primary_names, nickname_names
 
     except Exception as e:
         st.error(f"Error scraping Baylor player names: {e}")
         return {}, {}
+    
+def scrape_baylor_staff(url: str):
+    """
+    Scrape Baylor staff names and titles using Selenium
+    """
+    staff_dict = {}
+
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.common.by import By
+        from webdriver_manager.chrome import ChromeDriverManager
+        import time
+
+        options = Options()
+        options.headless = True
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver.get(url)
+
+        # Wait for staff roster to fully load
+        time.sleep(3)
+
+        # Baylor staff selector
+        staff_items = driver.find_elements(By.CSS_SELECTOR, "li.sidearm-roster-staff-item")
+        for li in staff_items:
+            try:
+                name_el = li.find_element(By.CSS_SELECTOR, ".sidearm-roster-staff-name")
+                title_el = li.find_element(By.CSS_SELECTOR, ".sidearm-roster-staff-title")
+                name = name_el.text.strip()
+                title = title_el.text.strip() if title_el else "Staff"
+                if name:
+                    staff_dict[normalize(name)] = {"name": name, "title": title}
+            except:
+                continue
+
+        driver.quit()
+        return staff_dict
+
+    except Exception as e:
+        st.error(f"Error scraping Baylor staff: {e}")
+        return {}
+
 
 
 def scrape_player_names(url: str):
-    """
-    Scrape player names and nicknames from a roster page.
-    """
     is_baylor = "baylorbears.com" in url.lower()
     found_names = set()
 
-    # Keywords to filter out non-player entries
     invalid_keywords = [
         "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
@@ -128,13 +181,17 @@ def scrape_player_names(url: str):
     ]
 
     try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # --- Baylor logic ---
         if is_baylor:
             return scrape_baylor_players(url)
-        else:
-            resp = requests.get(url, timeout=20)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
 
+
+        # --- Other schools ---
+        else:
             common_player_selectors = [
                 ".s-text-regular-bold",
                 ".roster-list-item__title",
@@ -142,7 +199,7 @@ def scrape_player_names(url: str):
                 "td.sidearm-table-player-name",
                 ".roster-list__item-name",
                 "a.table__roster-name",
-                "td.sidearm-roster-table-data a[title]",  # ✅ catches Baylor player links
+                "td.sidearm-roster-table-data a[title]",
                 "td > a[href*='/roster/season/']",
                 "a.table__roster-name span",
                 'div[data-test-id="s-person-details__personal-single-line"] h3',
@@ -153,16 +210,15 @@ def scrape_player_names(url: str):
                 name = element.get_text(" ", strip=True)
                 lower_name = name.lower()
 
-                # Add this new check to skip invalid keywords
                 if any(word in lower_name for word in invalid_keywords):
                     continue
 
                 if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
                     found_names.add(name)
 
+        # --- Build dictionaries ---
         primary_names = {}
         nickname_names = {}
-
         for name in found_names:
             match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
             if match:
@@ -184,6 +240,8 @@ def scrape_staff_names(url: str):
     Returns a dictionary: {normalized_name: {"name": original_name, "title": title}}
     """
     staff_dict = {}
+    if "baylorbears.com" in url.lower():
+        return scrape_baylor_staff(url)
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
@@ -284,15 +342,6 @@ def scrape_staff_names(url: str):
         for name_span in coach_names:
             name = name_span.get_text(" ", strip=True)
             staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
-
-        # 🟢 Baylor-specific staff scraping — ADDITION
-        for li in soup.select("li.sidearm-roster-staff-item"):
-            name_tag = li.select_one(".sidearm-roster-staff-name")
-            title_tag = li.select_one(".sidearm-roster-staff-title")
-            if name_tag:
-                name = name_tag.get_text(" ", strip=True)
-                title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
-                staff_dict[normalize(name)] = {"name": name, "title": title}
 
         return staff_dict
 
@@ -563,3 +612,13 @@ if st.button("Check Files"):
 st.subheader("Debug: Staff Dictionary Contents")
 if 'staff_dict' in locals():
     st.write(staff_dict)
+
+url = "https://baylorbears.com/sports/football/roster"
+resp = requests.get(url)
+soup = BeautifulSoup(resp.text, "html.parser")
+
+# Print all divs with the player class
+players = soup.select("div.sidearm-roster-list-item-name.sidearm-roster-player-name a")
+print(f"Found {len(players)} players")
+for p in players:
+    print(p.get_text(strip=True))

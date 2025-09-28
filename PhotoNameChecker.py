@@ -166,10 +166,27 @@ def scrape_baylor_staff(url: str):
         st.error(f"Error scraping Baylor staff: {e}")
         return {}
 
+def contains_invalid_word(name: str, invalid_words: list[str]) -> bool:
+    """
+    Returns True if any invalid word matches as a whole word in the name.
+    """
+    name_lower = name.lower()
+    for word in invalid_words:
+        if re.search(rf"\b{re.escape(word)}\b", name_lower):
+            return True
+    return False
 
 
 def scrape_player_names(url: str):
+    """
+    Scrape player names from a roster page.
+    Returns two dictionaries:
+        primary_names: {normalized_name: original_name}
+        nickname_names: {normalized_name: original_name} (if nicknames detected)
+    """
     is_baylor = "baylorbears.com" in url.lower()
+    is_stetson = "stetson.edu" in url.lower()  # Stetson-specific
+
     found_names = set()
 
     invalid_keywords = [
@@ -177,7 +194,7 @@ def scrape_player_names(url: str):
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
         "more", "results", "events", "©", "menu", "25fb", "2025",
-        "photo"
+        "photo", "headshot"
     ]
 
     try:
@@ -188,38 +205,56 @@ def scrape_player_names(url: str):
         # --- Baylor logic ---
         if is_baylor:
             return scrape_baylor_players(url)
+        
+        # Stetson-specific scraping
+        if is_stetson:
+            for li in soup.select("li.sidearm-roster-player"):
+                name_tag = li.select_one("h3 a")
+                if name_tag:
+                    name = name_tag.get_text(" ", strip=True)
+                    if name and not contains_invalid_word(name, ["news", "schedule", "staff", "coach", "video"]):
+                        found_names.add(name)
 
 
-        # --- Other schools ---
-        else:
-            common_player_selectors = [
-                ".s-text-regular-bold",
-                ".roster-list-item__title",
-                ".player-name",
-                "td.sidearm-table-player-name",
-                ".roster-list__item-name",
-                "a.table__roster-name",
-                "td.sidearm-roster-table-data a[title]",
-                "td > a[href*='/roster/season/']",
-                "a.table__roster-name span",
-                'div[data-test-id="s-person-details__personal-single-line"] h3',
-                'a[href*="/player/"]'
-            ]
+            primary_names = {normalize(name): name for name in found_names}
+            nickname_names = {}
+            return primary_names, nickname_names
 
-            for element in soup.select(", ".join(common_player_selectors)):
-                name = element.get_text(" ", strip=True)
-                lower_name = name.lower()
 
-                if any(word in lower_name for word in invalid_keywords):
-                    continue
+        # --- Common selectors for other schools ---
+        common_player_selectors = [
+            ".s-text-regular-bold",
+            ".roster-list-item__title",
+            ".player-name",
+            "td.sidearm-table-player-name",
+            ".roster-list__item-name",
+            "a.table__roster-name",
+            "td.sidearm-roster-table-data a[title]",
+            "td > a[href*='/roster/season/']",
+            "a.table__roster-name span",
+            'div[data-test-id="s-person-details__personal-single-line"] h3',
+            'a[href*="/player/"]'
+        ]
 
-                if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
-                    found_names.add(name)
+        # --- Step 1: scrape common selectors ---
+        for element in soup.select(", ".join(common_player_selectors)):
+            name = element.get_text(" ", strip=True)
+            if contains_invalid_word(name, invalid_keywords):
+                continue
+            if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
+                found_names.add(name)
 
-        # --- Build dictionaries ---
+        # --- Step 2: ASU-specific fix: scrape alt from player images ---
+        for img_tag in soup.select('a.roster-card__image-wrapper img'):
+            name = img_tag.get('alt', '').strip()
+            if name:
+                found_names.add(name)
+
+        # --- Step 3: build primary and nickname dictionaries ---
         primary_names = {}
         nickname_names = {}
         for name in found_names:
+            # Look for nicknames in quotes
             match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
             if match:
                 first_name, nickname, last_name = match.groups()
@@ -234,6 +269,7 @@ def scrape_player_names(url: str):
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
 
+
 def scrape_staff_names(url: str):
     """
     Scrape staff names and titles from a roster page.
@@ -242,10 +278,27 @@ def scrape_staff_names(url: str):
     staff_dict = {}
     if "baylorbears.com" in url.lower():
         return scrape_baylor_staff(url)
+    
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        if "thesundevils.com" in url.lower():
+            for a_tag in soup.select('h3.roster-card__title a.roster-card__title-link'):
+                href = a_tag.get('href', '')
+                if '/staff/' in href.lower():
+                    name = a_tag.get_text(strip=True)
+                    # Get title if available
+                    parent_div = a_tag.find_parent('div', class_='roster-card__heading')
+                    title = "Staff"
+                    if parent_div:
+                        info_div = parent_div.find_next_sibling('div', class_='roster-card__info')
+                        if info_div:
+                            span = info_div.select_one('span.roster-card__position')
+                            if span:
+                                title = span.get_text(strip=True)
+                    staff_dict[normalize(name)] = {"name": name, "title": title}
 
         # Selectors for various staff list formats
         staff_items = soup.select('li.sidearm-roster-coach, .roster-list-item.staff, tr[data-v-7436a2c8]')
@@ -386,7 +439,8 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
             continue  # skip fake entries
 
         if normalized_name not in existing_player_files:
-            parts = roster_name.split(" ", 1)
+            clean_name = roster_name.replace("Headshot", "").strip()
+            parts = clean_name.split(" ", 1)
             if len(parts) == 2:
                 first, last = parts
             else:
@@ -397,9 +451,7 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
                 "filename": None,
                 "first": first.lower(),
                 "last": last.lower() if last else "",
-                "status": "⚠️ Missing",
-                "suggestion": expected_filename,
-                "name": roster_name
+                "status": "⚠️ Missing"
             })
 
     return missing_players
@@ -531,8 +583,7 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
             "filename": filename,
             "first": raw_first,
             "last": raw_last,
-            "status": status,
-            "name": roster_name
+            "status": status
         })
 
     # --- Step 2: missing players (ignore staff) ---

@@ -13,7 +13,15 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 
-# --- Filename parsing ---
+# --- Common HTTP Headers to avoid basic bot detection and connection issues ---
+COMMON_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Connection': 'keep-alive'
+}
+
+# --- Filename parsing (Unchanged) ---
 
 def parse_filenames(folder_or_files):
     """
@@ -88,6 +96,8 @@ def normalize(name: str) -> str:
     # Collapse multiple spaces and trim
     name = re.sub(r"\s+", " ", name).strip()
     return name
+
+# --- Baylor scraping functions (use Selenium, no change needed) ---
 
 def scrape_baylor_players(url: str):
     import time
@@ -198,7 +208,8 @@ def scrape_player_names(url: str):
     ]
 
     try:
-        resp = requests.get(url, timeout=20)
+        # **FIX 1 & 2:** Use common headers and increased timeout
+        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -233,7 +244,10 @@ def scrape_player_names(url: str):
             "td > a[href*='/roster/season/']",
             "a.table__roster-name span",
             'div[data-test-id="s-person-details__personal-single-line"] h3',
-            'a[href*="/player/"]'
+            'a[href*="/player/"]',
+            # Added robust Sidearm Sports selectors for players (common for USD)
+            'li.sidearm-roster-player-name a',
+            'div.sidearm-roster-list-item-name a'
         ]
 
         # --- Step 1: scrape common selectors ---
@@ -266,6 +280,7 @@ def scrape_player_names(url: str):
         return primary_names, nickname_names
 
     except Exception as e:
+        # Improved error logging for debugging
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
 
@@ -280,7 +295,8 @@ def scrape_staff_names(url: str):
         return scrape_baylor_staff(url)
     
     try:
-        resp = requests.get(url, timeout=20)
+        # **FIX 1 & 2:** Use common headers and increased timeout
+        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -303,6 +319,9 @@ def scrape_staff_names(url: str):
         # Selectors for various staff list formats
         staff_items = soup.select('li.sidearm-roster-coach, .roster-list-item.staff, tr[data-v-7436a2c8]')
         
+        # **FIX 3:** Added robust Sidearm Sports staff selector (for USD/generic sidearm sites)
+        sidearm_staff_items = soup.select('li.sidearm-roster-staff-item')
+
         # New selector for h3 name format
         h3_staff_names = soup.select('a[href*="/roster/staff/"] h3')
 
@@ -340,6 +359,20 @@ def scrape_staff_names(url: str):
             if "bio" in name.lower() or "view" in name.lower():
                 continue
 
+            staff_dict[normalize(name)] = {"name": name, "title": title}
+
+        # Process the newly added Sidearm Sports staff selector
+        for item in sidearm_staff_items:
+            # Attempt to find name in common Sidearm staff elements
+            name_tag = item.select_one('.sidearm-roster-staff-name p, .sidearm-roster-staff-name')
+            title_tag = item.select_one('.sidearm-roster-staff-title span, .sidearm-roster-staff-title')
+            
+            if not name_tag:
+                continue
+            
+            name = name_tag.get_text(" ", strip=True)
+            title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
+            
             staff_dict[normalize(name)] = {"name": name, "title": title}
         
         # Process new h3 name format
@@ -399,6 +432,7 @@ def scrape_staff_names(url: str):
         return staff_dict
 
     except Exception as e:
+        # Improved error logging for debugging
         st.error(f"Error scraping staff names: {e}")
         return {}
 
@@ -461,10 +495,6 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
 def _extract_drive_folder_id(url: str) -> str | None:
     """
     Extracts the folder ID from a Google Drive folder URL.
-    Supports URLs like:
-      - https://drive.google.com/drive/folders/<FOLDER_ID>?usp=sharing
-      - https://drive.google.com/drive/u/0/folders/<FOLDER_ID>
-      - https://drive.google.com/open?id=<FOLDER_ID>
     """
     try:
         parsed = urlparse(url)
@@ -501,7 +531,8 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
 
     for url in candidates:
         try:
-            r = requests.get(url, timeout=20)
+            # **FIX:** Use headers here too, just in case Drive is sensitive
+            r = requests.get(url, timeout=30, headers=COMMON_HEADERS)
             r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
 
@@ -529,9 +560,7 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
     )
     return []
 
-# --- Comparison logic ---
-
-# --- Comparison logic ---
+# --- Comparison logic (Unchanged) ---
 
 def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff_dict, school_prefix):
     data = []

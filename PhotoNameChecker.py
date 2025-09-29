@@ -247,7 +247,8 @@ def scrape_player_names(url: str):
             'a[href*="/player/"]',
             # Added robust Sidearm Sports selectors for players (common for USD)
             'li.sidearm-roster-player-name a',
-            'div.sidearm-roster-list-item-name a'
+            'div.sidearm-roster-list-item-name a',
+            'th.name a[href*="/bios/"]'
         ]
 
         # --- Step 1: scrape common selectors ---
@@ -458,33 +459,53 @@ def find_missing_players(parsed_files, player_keys, staff_dict, school_prefix):
         if not entry.get("format_valid", False):
             continue
         normalized_name = normalize(f"{entry.get('first','')} {entry.get('last','')}")
-        if normalized_name not in staff_dict:  # ignore staff files
+        if normalized_name not in staff_dict:
             existing_player_files.add(normalized_name)
 
     missing_players = []
 
     for normalized_name, roster_name in player_keys.items():
-        # 🆕 Add this check to explicitly skip staff members
         if normalized_name in staff_dict:
             continue
 
-        # Skip any roster names that are clearly not real players
         if roster_name.lower() in ["full bio", "view full bio"]:
-            continue  # skip fake entries
+            continue
 
         if normalized_name not in existing_player_files:
-            clean_name = roster_name.replace("Headshot", "").strip()
-            parts = clean_name.split(" ", 1)
-            if len(parts) == 2:
-                first, last = parts
+            
+            # --- START CORRECTED NAME SPLIT LOGIC ---
+            
+            # Use the normalized_name (e.g., "kalvyn crummie") for splitting
+            parts = [p.strip() for p in normalized_name.split() if p.strip()]
+            
+            first = ""
+            last = ""
+            
+            if len(parts) >= 2:
+                # Two or more names: Last is the final word, First is everything before it.
+                # Example: ['kalvyn', 'crummie'] -> first='kalvyn', last='crummie'
+                # Example: ['d'arious', 't', 'reed'] -> first='d'arious t', last='reed'
+                last_raw = parts[-1]
+                first_raw = ' '.join(parts[:-1])
+                
+            elif len(parts) == 1:
+                # Single-name case: Use it as the 'first' name.
+                # Example: ['tymoss'] -> first='tymoss', last=''
+                first_raw = parts[0]
+                last_raw = ""
             else:
-                first = parts[0]
-                last = ""
-            expected_filename = f"{school_prefix}_{last.lower()}_{first.lower()}.png" if last else f"{school_prefix}_{first.lower()}.png"
+                continue # Skip empty names
+
+            # Clean up parts for the FILENAME (remove ' and - from the suggested filename components)
+            first = re.sub(r"['\-]", "", first_raw)
+            last = re.sub(r"['\-]", "", last_raw)
+            
+            # --- END CORRECTED NAME SPLIT LOGIC ---
+
             missing_players.append({
                 "filename": None,
-                "first": first.lower(),
-                "last": last.lower() if last else "",
+                "first": first, 
+                "last": last,
                 "status": "⚠️ Missing"
             })
 

@@ -186,6 +186,20 @@ def contains_invalid_word(name: str, invalid_words: list[str]) -> bool:
             return True
     return False
 
+def clean_roster_name(raw_name: str) -> str:
+    """
+    Ensure roster names are consistently 'First Last'
+    even if site lists them as 'Last, First'.
+    """
+    raw_name = raw_name.strip()
+    if "," in raw_name:  # handles "Alexander, Kael"
+        parts = [p.strip() for p in raw_name.split(",", 1)]
+        if len(parts) == 2:
+            last, first = parts
+            return f"{first} {last}"
+    return raw_name
+
+
 
 def scrape_player_names(url: str):
     """
@@ -222,10 +236,10 @@ def scrape_player_names(url: str):
             for li in soup.select("li.sidearm-roster-player"):
                 name_tag = li.select_one("h3 a")
                 if name_tag:
-                    name = name_tag.get_text(" ", strip=True)
+                    raw_name = name_tag.get_text(" ", strip=True)
+                    name = clean_roster_name(raw_name)
                     if name and not contains_invalid_word(name, ["news", "schedule", "staff", "coach", "video"]):
                         found_names.add(name)
-
 
             primary_names = {normalize(name): name for name in found_names}
             nickname_names = {}
@@ -253,7 +267,8 @@ def scrape_player_names(url: str):
 
         # --- Step 1: scrape common selectors ---
         for element in soup.select(", ".join(common_player_selectors)):
-            name = element.get_text(" ", strip=True)
+            name = clean_roster_name(element.get_text(" ", strip=True))
+
             if contains_invalid_word(name, invalid_keywords):
                 continue
             if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):

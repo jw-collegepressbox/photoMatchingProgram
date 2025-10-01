@@ -25,8 +25,9 @@ COMMON_HEADERS = {
 
 def parse_filenames(folder_or_files):
     """
-    Strict parse: only accept filenames in the format team_last_first.png.
-    Marks files invalid if they are missing parts or improperly formatted.
+    Parse filenames in the format:
+      school_last_first[_anything].png
+    Ignores any extra suffixes after first name.
     """
     parsed = []
     for file in folder_or_files:
@@ -34,42 +35,27 @@ def parse_filenames(folder_or_files):
         if not name.lower().endswith(".png"):
             continue
 
-        base = name[:-4]
+        base = name[:-4]  # strip .png
+        parts = base.split("_")
 
-        # Must contain exactly two underscores
-        if base.count("_") != 2:
+        if len(parts) < 3:
             parsed.append({
                 "filename": name,
                 "school": None,
                 "last": None,
                 "first": None,
                 "format_valid": False,
-                "format_msg": "Must have exactly two underscores: team_last_first.png"
+                "format_msg": "Too few parts: need school_last_first"
             })
             continue
 
-        parts = base.split("_")  # should be [school, last, first]
-        if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
-            # Empty last or first name
-            parsed.append({
-                "filename": name,
-                "school": None,
-                "last": None,
-                "first": None,
-                "format_valid": False,
-                "format_msg": "Missing last or first name"
-            })
-            continue
-
-        school = parts[0].lower().strip()
-        last = parts[1].lower().strip()
-        first = parts[2].lower().strip()
+        school, last, first = parts[0], parts[1], parts[2]
 
         parsed.append({
             "filename": name,
-            "school": school,
-            "last": last,
-            "first": first,
+            "school": school.lower().strip(),
+            "last": last.lower().strip(),
+            "first": first.lower().strip(),
             "format_valid": True,
             "format_msg": None
         })

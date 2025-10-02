@@ -86,13 +86,10 @@ def normalize(name: str) -> str:
 # --- Baylor scraping functions (use Selenium, no change needed) ---
 
 def scrape_baylor_players(url: str):
-    import time
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.common.by import By
-    from webdriver_manager.chrome import ChromeDriverManager
-
+    """
+    Scrape Baylor player names using Selenium.
+    Handles the new 's-person-details__personal-single-line' div format.
+    """
     primary_names = {}
     nickname_names = {}
 
@@ -105,12 +102,20 @@ def scrape_baylor_players(url: str):
         # Wait for the JavaScript roster to fully load
         time.sleep(3)
 
-        # Select the player links
+        # --- Old selector (sidearm roster) ---
         players = driver.find_elements(By.CSS_SELECTOR, "div.sidearm-roster-list-item-name.sidearm-roster-player-name a")
-
         for p in players:
             full_name = p.text.strip()
             if full_name:
+                primary_names[normalize(full_name)] = full_name
+
+        # --- New Baylor format selector ---
+        new_format_elements = driver.find_elements(
+            By.CSS_SELECTOR, "div[data-test-id='s-person-details__personal-single-line'] a h3"
+        )
+        for el in new_format_elements:
+            full_name = el.text.strip()
+            if full_name and normalize(full_name) not in primary_names:
                 primary_names[normalize(full_name)] = full_name
 
         driver.quit()
@@ -119,30 +124,25 @@ def scrape_baylor_players(url: str):
     except Exception as e:
         st.error(f"Error scraping Baylor player names: {e}")
         return {}, {}
+
     
 def scrape_baylor_staff(url: str):
     """
-    Scrape Baylor staff names and titles using Selenium
+    Scrape Baylor staff and coaches using Selenium.
+    Handles the new 's-person-details__personal-single-line' div format.
     """
     staff_dict = {}
 
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.common.by import By
-        from webdriver_manager.chrome import ChromeDriverManager
-        import time
-
         options = Options()
         options.headless = True
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         driver.get(url)
 
-        # Wait for staff roster to fully load
+        # Wait for roster to fully load
         time.sleep(3)
 
-        # Baylor staff selector
+        # --- Old Sidearm staff selector ---
         staff_items = driver.find_elements(By.CSS_SELECTOR, "li.sidearm-roster-staff-item")
         for li in staff_items:
             try:
@@ -154,6 +154,22 @@ def scrape_baylor_staff(url: str):
                     staff_dict[normalize(name)] = {"name": name, "title": title}
             except:
                 continue
+
+        # --- New Baylor format (players and coaches) ---
+        elements = driver.find_elements(
+            By.CSS_SELECTOR, "div[data-test-id='s-person-details__personal-single-line'] a"
+        )
+        for a in elements:
+            href = a.get_attribute("href") or ""
+            name_el = a.find_element(By.TAG_NAME, "h3")
+            name = name_el.text.strip() if name_el else None
+            if name:
+                normalized = normalize(name)
+                if "/coaches/" in href.lower():
+                    staff_dict[normalized] = {"name": name, "title": "Coach"}
+                else:
+                    # Skip adding players here (we only want staff/coaches)
+                    continue
 
         driver.quit()
         return staff_dict

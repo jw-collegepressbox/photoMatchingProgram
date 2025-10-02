@@ -108,54 +108,35 @@ def scrape_baylor_players(url: str):
     
 def scrape_baylor_staff(url: str):
     """
-    Scrape Baylor staff and coaches using Selenium.
-    Handles the new 's-person-details__personal-single-line' div format.
+    Scrape Baylor staff/coaches using Requests + BeautifulSoup (no Selenium).
+    Returns a dictionary: {normalized_name: {"name": original_name, "title": "Coach"}}
     """
+    import requests
+    from bs4 import BeautifulSoup
+
     staff_dict = {}
 
     try:
-        options = Options()
-        options.headless = True
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        driver.get(url)
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=30)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        # Wait for roster to fully load
-        time.sleep(3)
-
-        # --- Old Sidearm staff selector ---
-        staff_items = driver.find_elements(By.CSS_SELECTOR, "li.sidearm-roster-staff-item")
-        for li in staff_items:
-            try:
-                name_el = li.find_element(By.CSS_SELECTOR, ".sidearm-roster-staff-name")
-                title_el = li.find_element(By.CSS_SELECTOR, ".sidearm-roster-staff-title")
-                name = name_el.text.strip()
-                title = title_el.text.strip() if title_el else "Staff"
-                if name:
-                    staff_dict[normalize(name)] = {"name": name, "title": title}
-            except:
+        # Select all the 'personal single line' divs
+        for div in soup.select("div[data-test-id='s-person-details__personal-single-line'] a"):
+            href = div.get("href") or ""
+            h3 = div.find("h3")
+            if not h3:
                 continue
+            name = h3.get_text(strip=True)
 
-        # --- New Baylor format (players and coaches) ---
-        elements = driver.find_elements(
-            By.CSS_SELECTOR, "div[data-test-id='s-person-details__personal-single-line'] a"
-        )
-        for a in elements:
-            href = a.get_attribute("href") or ""
-            name_el = a.find_element(By.TAG_NAME, "h3")
-            name = name_el.text.strip() if name_el else None
-            if name:
-                normalized = normalize(name)
-                if "/coaches/" in href.lower():
-                    staff_dict[normalized] = {"name": name, "title": "Coach"}
-                else:
-                    # Skip adding players here (we only want staff/coaches)
-                    continue
+            # Only pick coaches/staff (links with '/coaches/')
+            if "/coaches/" in href:
+                staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
 
-        driver.quit()
         return staff_dict
 
     except Exception as e:
-        st.error(f"Error scraping Baylor staff: {e}")
+        st.error(f"Error scraping Baylor staff (BS version): {e}")
         return {}
 
 def contains_invalid_word(name: str, invalid_words: list[str]) -> bool:

@@ -86,45 +86,25 @@ def normalize(name: str) -> str:
 # --- Baylor scraping functions (use Selenium, no change needed) ---
 
 def scrape_baylor_players(url: str):
-    """
-    Scrape Baylor player names using Selenium.
-    Handles the new 's-person-details__personal-single-line' div format.
-    """
-    primary_names = {}
+    import requests
+    from bs4 import BeautifulSoup
+
+    players = {}
     nickname_names = {}
 
-    try:
-        options = Options()
-        options.headless = True  # run without opening a browser window
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        driver.get(url)
+    r = requests.get(url, headers=COMMON_HEADERS, timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-        # Wait for the JavaScript roster to fully load
-        time.sleep(3)
-
-        # --- Old selector (sidearm roster) ---
-        players = driver.find_elements(By.CSS_SELECTOR, "div.sidearm-roster-list-item-name.sidearm-roster-player-name a")
-        for p in players:
-            full_name = p.text.strip()
-            if full_name:
-                primary_names[normalize(full_name)] = full_name
-
-        # --- New Baylor format selector ---
-        new_format_elements = driver.find_elements(
-            By.CSS_SELECTOR, "div[data-test-id='s-person-details__personal-single-line'] a h3"
-        )
-        for el in new_format_elements:
-            full_name = el.text.strip()
-            if full_name and normalize(full_name) not in primary_names:
-                primary_names[normalize(full_name)] = full_name
-
-        driver.quit()
-        return primary_names, nickname_names
-
-    except Exception as e:
-        st.error(f"Error scraping Baylor player names: {e}")
-        return {}, {}
-
+    for a in soup.select("div[data-test-id='s-person-details__personal-single-line'] a"):
+        href = a.get("href") or ""
+        if "/coaches/" in href:
+            continue
+        h3 = a.find("h3")
+        if h3:
+            name = h3.get_text(strip=True)
+            players[normalize(name)] = name
+    return players, nickname_names
     
 def scrape_baylor_staff(url: str):
     """

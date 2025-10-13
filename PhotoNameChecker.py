@@ -234,8 +234,9 @@ def scrape_player_names(url: str):
 
             if contains_invalid_word(name, invalid_keywords):
                 continue
-            if name and not re.search(r'(coach|staff|bio|view|jersey|number)', name, re.I):
+            if name and not contains_invalid_word(name, invalid_keywords):
                 found_names.add(name)
+
 
         # --- Step 2: ASU-specific fix: scrape alt from player images ---
         for img_tag in soup.select('a.roster-card__image-wrapper img'):
@@ -673,8 +674,7 @@ if st.button("Check Files"):
             "head coach", "assistant", "trainer", "operations"
         ]
         for key in list(player_keys.keys()):
-            lower_name = player_keys[key].lower()
-            if any(word in lower_name for word in invalid_keywords):
+            if contains_invalid_word(player_keys[key], invalid_keywords):
                 del player_keys[key]
                 if key in nickname_keys:
                     del nickname_keys[key]
